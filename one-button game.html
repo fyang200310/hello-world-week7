@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>#claw — a one-button game</title>
+<style>
+  html,body{margin:0;height:100%;background:#2b1a3a;overflow:hidden;touch-action:manipulation;-webkit-user-select:none;user-select:none}
+  body{display:flex;align-items:center;justify-content:center}
+  canvas{display:block;cursor:pointer;image-rendering:pixelated;-webkit-tap-highlight-color:transparent}
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="Pixel claw machine. Press space or tap to play."></canvas>
+<script>
+(() => {
+const LW = 192, LH = 256;
+const lc = document.createElement('canvas'); lc.width = LW; lc.height = LH;
+const g = lc.getContext('2d'); g.imageSmoothingEnabled=false;
+const cv = document.getElementById('c'), out = cv.getContext('2d');
+function resize(){
+  const dpr = window.devicePixelRatio || 1;
+  const s = Math.max(1, Math.floor(Math.min(innerWidth*dpr/LW, innerHeight*dpr/LH)));
+  cv.width = LW*s; cv.height = LH*s;
+  cv.style.width = (LW*s/dpr)+'px'; cv.style.height = (LH*s/dpr)+'px';
+}
+addEventListener('resize', resize); resize();
+// ================= palette =================
+const P = {
+  bg:'#2b1a3a', bgDot:'#4a2f60', ink:'#4a2a4f', cream:'#fff6ea', white:'#ffffff',
+  pink:'#f7a6c8', pink2:'#ee7fb0', pink3:'#d95a92', rose:'#ffd3e4',
+  lav:'#c6a3ea', lav2:'#b48ee0', lav3:'#e0cdf6', blush:'#ff8fa8',
+  yellow:'#ffd966', orange:'#f5a25d', brown:'#9c6a4a', tan:'#e8c49a',
+  green:'#6cc28a', mint:'#a8e6cf', gold:'#ffcc4d', red:'#ff6b8a', dark:'#2b1a3a'
+};
+
+// ================= tiny bitmap font (3x5) =================
+const F = {
+A:'.#.#.####.##.#',B:'##.#.###.#.###.',C:'.###..#..#...##',D:'##.#.##.##.###.',E:'####..##.#..###',
+F:'####..##.#..#..',G:'.###..#.##.#.##',H:'#.##.####.##.#',I:'###.#..#..#.###',J:'..#..#..##.#.#.',
+K:'#.##.###.#.##.#',L:'#..#..#..#..###',M:'#.#####.##.##.#',N:'##.#.##.##.##.#',O:'.#.#.##.##.#.#.',
+P:'##.#.###.#..#..',Q:'.#.#.##.###..##',R:'##.#.###.#.##.#',S:'.###...#...###.',T:'###.#..#..#..#.',
+U:'#.##.##.##.####',V:'#.##.##.#.#..#.',W:'#.##.#######.#',X:'#.##.#.#.#.##.#',Y:'#.##.#.#..#..#.',
+Z:'###..#.#.#..###','0':'####.##.##.####','1':'.#.##..#..#.###','2':'##...#.#.#..###',
+'3':'##...#.#...###.','4':'#.##.####..#..#','5':'####..##...###.','6':'.###..####.####',
+'7':'###..#.#..#..#.','8':'####.#####.####','9':'####.####..###.','!':'.#..#..#.....#.',
+'.':'.............#.','?':'##...#.#.....#.','-':'......###......',':':'....#.....#....','x':'...#.#.#.#.#...',' ':'...............'
+};
+// fix 14-length entries (A,H,W) by padding to 15
+for(const k in F){ if(F[k].length<15) F[k] = F[k].padEnd(15,'.'); }
+F.A = '.#.#.####.##.#.'.replace(/.$/,'#'); F.A='.#.#.####.##.##'.slice(0,15);
+F.A = '.#.'+'#.#'+'###'+'#.#'+'#.#';
+F.H = '#.#'+'#.#'+'###'+'#.#'+'#.#';
+F.W = '#.#'+'#.#'+'###'+'###'+'#.#';
+F.M = '#.#'+'###'+'###'+'#.#'+'#.#';
+F.N = '##.'+'#.#'+'#.#'+'#.#'+'#.#';
+F.O = '.#.'+'#.#'+'#.#'+'#.#'+'.#.';
+F.U = '#.#'+'#.#'+'#.#'+'#.#'+'###';
+F.V = '#.#'+'#.#'+'#.#'+'.#.'+'.#.';
+F.Y = '#.#'+'#.#'+'.#.'+'.#.'+'.#.';
+F.G = '.##'+'#..'+'#.#'+'#.#'+'.##';
+F.B = '##.'+'#.#'+'##.'+'#.#'+'##.';
+F.R = '##.'+'#.#'+'##.'+'#.#'+'#.#';
+F.P = '##.'+'#.#'+'##.'+'#..'+'#..';
+F.K = '#.#'+'#.#'+'##.'+'#.#'+'#.#';
+F.S = '.##'+'#..'+'.#.'+'..#'+'##.';
+F.C = '.##'+'#..'+'#..'+'#..'+'.##';
+F.D = '##.'+'#.#'+'#.#'+'#.#'+'##.';
+F.E = '###'+'#..'+'##.'+'#..'+'###';
+F.T = '###'+'.#.'+'.#.'+'.#.'+'.#.';
+F.L = '#..'+'#..'+'#..'+'#..'+'###';
+F.I = '###'+'.#.'+'.#.'+'.#.'+'###';
+F.X = '#.#'+'#.#'+'.#.'+'#.#'+'#.#';
+F['+'] = '...'+'.#.'+'###'+'.#.'+'...';
+const HEART = ['.#.#.','#####','#####','.###.','..#..'];
+
+function textW(s, sc=1){ return (s.length*4-1)*sc; }
+function text(s, x, y, col, sc=1, shadow){
+  s = s.toUpperCase();
+  if(shadow){ text(s, x+sc, y+sc, shadow, sc); }
+  g.fillStyle = col;
+  for(let i=0;i<s.length;i++){
+    const gl = F[s[i]] || F[' '];
+    for(let k=0;k<15;k++) if(gl[k]==='#') g.fillRect(x + i*4*sc + (k%3)*sc, y + Math.floor(k/3)*sc, sc, sc);
+  }
+}
+function textC(s, cx, y, col, sc=1, shadow){ text(s, Math.round(cx - textW(s,sc)/2), y, col, sc, shadow); }
+function heart(x, y, col, sc=1){ g.fillStyle=col; HEART.forEach((r,j)=>{ for(let i=0;i<5;i++) if(r[i]==='#') g.fillRect(x+i*sc,y+j*sc,sc,sc); }); }
+function rect(x,y,w,h,c){ g.fillStyle=c; g.fillRect(x,y,w,h); }
+function box(x,y,w,h,fill,ol=P.ink){ rect(x,y,w,h,ol); rect(x+1,y+1,w-2,h-2,fill); }
+
+// ================= original pixel plush sprites =================
+const TYPES = ['bunny','kitty','bear','chick','mochi','lamb'];
+function mkSprite(type){
+  const w=17, h=21, gr=[...Array(h)].map(()=>Array(w).fill(null));
+  const set=(x,y,c)=>{ if(x>=0&&x<w&&y>=0&&y<h) gr[y][x]=c; };
+  const ell=(cx,cy,rx,ry,c)=>{ for(let y=0;y<h;y++)for(let x=0;x<w;x++){ const dx=(x+0.5-cx)/rx, dy=(y+0.5-cy)/ry; if(dx*dx+dy*dy<=1) set(x,y,c);} };
+  const body = { bunny:P.cream, kitty:P.cream, bear:P.tan, chick:P.yellow, mochi:P.rose, lamb:P.white }[type];
+  // back parts
+  if(type==='bunny'){ ell(5.5,5,1.9,4.3,body); ell(11.5,5,1.9,4.3,body); }
+  if(type==='kitty'){ for(let r=0;r<4;r++) for(let i=0;i<=r;i++){ set(3+i,4+r,body); set(13-i,4+r,body); } }
+  if(type==='bear'){ ell(4.2,8,2.5,2.5,body); ell(12.8,8,2.5,2.5,body); }
+  if(type==='lamb'){ ell(3,10,2.6,1.6,P.tan); ell(14,10,2.6,1.6,P.tan); }
+  ell(8.5,13.5,7.6,6.6,body);
+  if(type==='chick'){ set(8,6,body); set(8,5,body); set(9,4,body); }
+  if(type==='mochi'){ [[6,6],[7,6],[9,6],[10,6],[8,5],[8,6],[7,5],[9,5]].forEach(([x,y])=>set(x,y,P.green)); }
+  if(type==='lamb'){ for(const [x,y] of [[5,7],[7,6],[9,6],[11,7],[6,6],[10,6],[8,6]]) set(x,y,P.white); }
+  // outline
+  const o = gr.map(r=>r.slice());
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++) if(!gr[y][x]){
+    if((gr[y-1]&&gr[y-1][x])||(gr[y+1]&&gr[y+1][x])||gr[y][x-1]||gr[y][x+1]) o[y][x]=P.ink;
+  }
+  const S=(x,y,c)=>{ o[y][x]=c; };
+  // details
+  if(type==='bunny'){ for(let y=3;y<=7;y++){ S(5,y,P.pink); S(11,y,P.pink); } }
+  if(type==='kitty'){ S(4,7,P.pink); S(12,7,P.pink);
+    for(let y=7;y<13;y++) for(let x=1;x<7;x++) if(o[y][x]===P.cream && (x+y<16)) S(x,y,P.orange);
+    for(let y=15;y<20;y++) for(let x=11;x<16;x++) if(o[y][x]===P.cream && (x-y>-6)) S(x,y,P.brown); }
+  if(type==='bear'){ S(4,8,P.pink); S(13,8,P.pink); for(let x=7;x<=10;x++){ S(x,15,P.cream); S(x,16,P.cream);} }
+  if(type==='mochi'){ for(let y=7;y<=10;y++) for(let x=0;x<w;x++) if(o[y][x]===P.rose) S(x,y,P.pink); S(5,9,P.cream); S(11,9,P.cream); S(8,8,P.cream); }
+  if(type==='lamb'){ for(let y=11;y<=18;y++) for(let x=4;x<=12;x++) if(o[y][x]===P.white && ((x-8.5)**2/16+(y-15)**2/14<1)) S(x,y,P.cream); }
+  // face
+  S(5,13,P.ink); S(5,14,P.ink); S(11,13,P.ink); S(11,14,P.ink);
+  S(3,15,P.blush); S(4,15,P.blush); S(12,15,P.blush); S(13,15,P.blush);
+  if(type==='chick'){ S(7,15,P.orange); S(8,15,P.orange); S(9,15,P.orange); S(8,16,P.orange); }
+  else if(type==='bear'){ S(8,15,P.ink); S(9,15,P.ink); S(8,16,P.ink); S(9,16,P.ink); }
+  else { S(7,15,P.ink); S(9,15,P.ink); S(8,16,P.ink); }
+  // render normal + flipped
+  const mk = flip => { const c=document.createElement('canvas'); c.width=w; c.height=h; const x=c.getContext('2d');
+    for(let y=0;y<h;y++)for(let i=0;i<w;i++){ const col=o[y][i]; if(col){ x.fillStyle=col; x.fillRect(flip?w-1-i:i,y,1,1);} } return c; };
+  return [mk(false), mk(true)];
+}
+const SPR = {}; TYPES.forEach(t => SPR[t] = mkSprite(t));
+function drawBubble(){
+  if(!pop) return;
+  const t=pop.age, sc=2;
+  const bounce = t<0.25 ? Math.round(Math.sin(t/0.25*Math.PI)*-4) : 0;
+  const fade = t>1.9 ? 1-(t-1.9)/0.3 : 1; if(fade<=0) return;
+  const good=pop.kind==='good', bad=pop.kind==='bad';
+  const fill = good?P.pink2 : bad?P.lav3 : P.yellow, tcol = good?P.cream:P.ink, sh = good?P.pink3: bad?P.lav2 : P.orange;
+  const w=Math.max(textW(pop.t,sc), textW(pop.sub,1))+28, h=30, x=Math.round(96-w/2), y=4+bounce;
+  g.globalAlpha=fade;
+  rect(x+2,y+2,w,h,P.ink);
+  box(x,y,w,h,fill); rect(x+1,y+1,w-2,1,good?P.pink:P.white);
+  // tail
+  for(let i=0;i<4;i++) rect(92-i+4, y+h-1+i, 2*(4-i)-1, 1, P.ink), rect(93-i+4, y+h-1+i, Math.max(0,2*(4-i)-3), 1, fill);
+  textC(pop.t, 96, y+5, tcol, sc, sh);
+  textC(pop.sub, 96, y+20, good?P.rose:P.ink);
+  if(good){ heart(x+5,y+11,P.cream); heart(x+w-10,y+11,P.cream); }
+  else if(bad){ g.fillStyle=P.lav2; [[2,0],[1,1],[2,1],[3,1],[0,2],[1,2],[2,2],[3,2],[4,2],[1,3],[2,3],[3,3]].forEach(([i,j])=>{rect(x+5+i,y+11+j,1,1,P.blue||'#7fb6ff'); rect(x+w-10+i,y+11+j,1,1,'#7fb6ff');}); }
+  g.globalAlpha=1;
+}
+
+// ================= audio (chiptune blips) =================
+let ac=null;
+function audio(){ if(!ac){ try{ ac=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} } if(ac&&ac.state==='suspended') ac.resume(); }
+function tone(f0,f1,dur,type='square',vol=0.06,delay=0){
+  if(!ac) return; const t=ac.currentTime+delay, o=ac.createOscillator(), gn=ac.createGain();
+  o.type=type; o.frequency.setValueAtTime(f0,t); o.frequency.exponentialRampToValueAtTime(Math.max(30,f1),t+dur);
+  gn.gain.setValueAtTime(0.0001,t); gn.gain.exponentialRampToValueAtTime(vol,t+0.01); gn.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  o.connect(gn).connect(ac.destination); o.start(t); o.stop(t+dur+0.02);
+}
+const sfx = {
+  coin(){ tone(988,988,0.07); tone(1319,1319,0.18,'square',0.06,0.07); },
+  stop(){ tone(660,660,0.05,'square',0.04); },
+  drop(){ tone(880,220,0.6,'triangle',0.08); },
+  grab(){ tone(200,140,0.06,'square',0.06); tone(260,180,0.06,'square',0.05,0.06); },
+  miss(){ tone(392,370,0.15,'square',0.05); tone(294,220,0.3,'square',0.05,0.15); },
+  win(){ [784,988,1175,1568].forEach((f,i)=>tone(f,f,0.12,'square',0.05,i*0.08)); },
+  slip(){ tone(600,150,0.45,'square',0.04); },
+  nope(){ tone(150,140,0.04,'square',0.025); }
+};
+
+// ================= geometry (pseudo-3D pit) =================
+const GL = 18, GR = 174, GT = 40, FLOOR = 172;   // FLOOR = front floor line on screen
+const D = 26, DS = 0.85;                          // pit depth (world) & how much depth lifts on screen
+const BACK = FLOOR - D*DS;                        // back floor line on screen
+const DIV_X0 = 50, DIV_X1 = 54, DIV_H = 20;
+const RAIL_Y = 45, TOP_Y = 58, HOME_X = 34, X_MIN = 34, X_MAX = 162, TIP = 20;
+const DC = D/2;                                   // claw works at mid depth
+const TOL = 6.5;                                  // big claw: within this many px of centre = secure grab
+const SLIP = 11;                                  // a bit further = grabbed but wiggles loose
+const R = 7.8;
+const sy = (d,h) => FLOOR - (D-d)*DS - h;         // world -> screen y
+const wh = (y) => (FLOOR - (D-DC)*DS) - y;        // screen y at claw depth -> world height
+
+function drawPlush(type, flip, x, y, a=0, shade=false){
+  const img = SPR[type][(flip?1:0) + (shade?2:0)];
+  if(Math.abs(a)<0.08){ g.drawImage(img, Math.round(x-8.5), Math.round(y-13.5)); return; }
+  g.save(); g.translate(Math.round(x),Math.round(y)); g.rotate(Math.round(a/0.13)*0.13);
+  g.drawImage(img, -8, -13); g.restore();
+}
+// shaded variants for plushies further back
+TYPES.forEach(t=>{ const v=SPR[t]; [0,1].forEach(i=>{ const c=document.createElement('canvas'); c.width=v[i].width; c.height=v[i].height;
+  const x=c.getContext('2d'); x.drawImage(v[i],0,0); x.globalCompositeOperation='source-atop'; x.fillStyle='rgba(120,70,160,0.13)'; x.fillRect(0,0,c.width,c.height); v.push(c); }); });
+
+// ================= plush physics (3D verlet, spheres) =================
+let plush=[], prizes=[];
+const GRAV = 430;
+function supportH(x,d){
+  let h=R, by=null; const m=2*R-1;
+  for(const q of plush){ const dist=Math.hypot(q.x-x,(q.d-d)); if(dist<m){ const hh=q.h+Math.sqrt(m*m-dist*dist); if(hh>h){h=hh;by=q;} } }
+  return {h,by};
+}
+function spawn(){
+  plush=[];
+  const lo=DIV_X1+R, hi=GR-R;
+  const mounds=[{c:80+Math.random()*12,w:12},{c:122+Math.random()*12,w:11},{c:155+Math.random()*6,w:7}];
+  let tries=0;
+  while(plush.length<32 && tries<900){
+    tries++;
+    let x = Math.random()<0.7 ? (()=>{const m=mounds[Math.floor(Math.random()*3)]; return m.c+(Math.random()+Math.random()-1)*m.w*1.7;})() : lo+Math.random()*(hi-lo);
+    x=Math.max(lo,Math.min(hi,x));
+    const d=Math.random()*D;
+    const {h,by}=supportH(x,d);
+    if(h>R+30) continue;
+    let a = Math.random()<0.3 ? (Math.random()-0.5)*0.15 : (Math.random()-0.5)*1.3;
+    if(by) a += Math.sign(x-by.x)*0.35;
+    plush.push({type:TYPES[plush.length%TYPES.length], flip:Math.random()<0.5, r:R, x,h,d, px:x,ph:h,pd:d, a,
+                held:false, gone:false, free:false, sleep:true, rest:0, touch:false});
+  }
+}
+function wake(p){ if(p.sleep){ p.sleep=false; p.rest=0; p.px=p.x; p.ph=p.h; p.pd=p.d; } }
+function kick(p, vx, vh){ wake(p); p.px -= vx; p.ph -= vh; }
+
+// kinematic claw spheres (prong tips + hub) in world coords
+function clawSpheres(){
+  const out=[]; if(!['down','grab','up'].includes(state)) return out;
+  for(const t of claw.tips) out.push({x:t.x, h:wh(t.y), d:DC, r:3});
+  out.push({x:claw.hx, h:wh(claw.y+2), d:DC, r:6});
+  return out;
+}
+
+let supT=0;
+function checkSupport(){
+  for(const p of plush){ if(!p.sleep||p.gone||p.h<=p.r+0.6) continue;
+    let ok=false; for(const q of plush){ if(q===p||q.gone||q.held||q.h>=p.h) continue;
+      if(Math.hypot(q.x-p.x,q.h-p.h,q.d-p.d)<p.r+q.r+0.8){ ok=true; break; } }
+    if(p.x>=DIV_X0-p.r && p.x<=DIV_X1+p.r && p.h<=DIV_H+p.r+0.8) ok=true;
+    if(!ok) wake(p); }
+}
+function step(dt){
+  supT+=dt; if(supT>0.15){ supT=0; checkSupport(); }
+  for(const p of plush){
+    if(p.gone) continue;
+    if(p.held){ p.px=p.x; p.ph=p.h; p.pd=p.d;
+      p.x += (claw.hx - p.x)*0.35; p.h += (wh(claw.y+19) - p.h)*0.35; p.d += (DC - p.d)*0.2; continue; }
+    if(p.sleep) continue;
+    if(p.touch && !p.free){ p.px=p.x-(p.x-p.px)*0.7; p.pd=p.d-(p.d-p.pd)*0.7; }
+    p.touch=false;
+    const vx=(p.x-p.px)*0.985, vh=(p.h-p.ph)*0.985, vd=(p.d-p.pd)*0.985;
+    p.px=p.x; p.ph=p.h; p.pd=p.d; p.x+=vx; p.h+=vh-GRAV*dt*dt; p.d+=vd;
+  }
+  const ks = clawSpheres();
+  for(let it=0; it<4; it++){
+    for(let i=0;i<plush.length;i++){ const a=plush[i]; if(a.gone) continue;
+      for(let j=i+1;j<plush.length;j++){ const b=plush[j]; if(b.gone||(a.held&&b.held)||(a.sleep&&b.sleep)) continue;
+        const dx=b.x-a.x, dh=b.h-a.h, dd=b.d-a.d, dist=Math.hypot(dx,dh,dd)||0.001, m=a.r+b.r-1;
+        if(dist<m){ const o=m-dist, nx=dx/dist, nh=dh/dist, nd=dd/dist;
+          if((a.sleep||b.sleep) && o<0.5) continue;
+          wake(a); wake(b); a.touch=b.touch=true;
+          if(a.held){ b.x+=nx*o; b.h+=nh*o; b.d+=nd*o; }
+          else if(b.held){ a.x-=nx*o; a.h-=nh*o; a.d-=nd*o; }
+          else { a.x-=nx*o/2; a.h-=nh*o/2; a.d-=nd*o/2; b.x+=nx*o/2; b.h+=nh*o/2; b.d+=nd*o/2; } } } }
+    for(const p of plush){ if(p.gone||p.held) continue;
+      for(const k of ks){ if(p===grabTarget && state==='grab') continue;
+        const dx=p.x-k.x, dh=p.h-k.h, dd=p.d-k.d, dist=Math.hypot(dx,dh,dd)||0.001, m=p.r+k.r;
+        if(dist<m){ wake(p); const o=m-dist; p.x+=dx/dist*o; p.h+=dh/dist*o; p.d+=dd/dist*o; p.touch=true; } }
+      if(p.sleep) continue;
+      const lw = p.free ? GL : DIV_X1;
+      if(p.x-p.r<lw) p.x=lw+p.r; if(p.x+p.r>GR) p.x=GR-p.r;
+      if(p.d<0) p.d=0; if(p.d>D) p.d=D;
+      if(p.x>DIV_X1-1 && p.h<p.r){ p.h=p.r; p.px=p.x-(p.x-p.px)*0.6; p.pd=p.d-(p.d-p.pd)*0.6; }
+      const cx=Math.max(DIV_X0,Math.min(p.x,DIV_X1)), ch=Math.min(p.h,DIV_H);
+      let dx=p.x-cx, dh=p.h-ch, dist=Math.hypot(dx,dh);
+      if(dist<p.r){ if(dist<0.001){dx=0;dh=1;dist=1;} p.x+=dx/dist*(p.r-dist); p.h+=dh/dist*(p.r-dist); }
+    }
+  }
+  for(const p of plush){
+    if(p.gone) continue;
+    const vx=p.x-p.px, vh=p.h-p.ph, vd=p.d-p.pd;
+    if(p.held){ p.a += (0.12*(p.flip?-1:1) + claw.th*0.8 - p.a)*0.05; continue; }
+    if(p.sleep) continue;
+    p.a += vx*0.08 + (p.free ? 0.035 : 0); if(!p.free) p.a=Math.max(-1.1,Math.min(1.1,p.a));
+    if(Math.hypot(vx,vh,vd)<0.05){ p.rest+=dt; if(p.rest>0.3 && !p.free) p.sleep=true; } else p.rest=0;
+    if(p.x<DIV_X0 && p.h < -p.r-4){ p.gone=true; prizes.push(p); cheer(); sfx.win(); }
+  }
+}
+
+// ================= game state =================
+const claw={x:HOME_X, y:TOP_Y, open:0.35, openT:0.35, dir:1, v:0, pv:0, th:0, om:0, hx:HOME_X, tips:[]};
+let state='ready', timer=0, coins=8, held=null, btnT=0, overT=0, pop=null, time=0, grabTarget=null, grabDx=99, slipAt=-1, fromY=TOP_Y;
+const COINS=8;
+function reset(){ coins=COINS; prizes=[]; state='ready'; timer=0; claw.x=HOME_X; claw.y=TOP_Y; claw.th=0; claw.om=0; held=null; pop=null; overT=0; spawn(); }
+function say(t,sub,kind){ pop={t,sub,kind,age:0}; }
+const pick=a=>a[Math.floor(Math.random()*a.length)];
+function cheer(){ say(pick(['YAY!','SO CUTE!','PERFECT!','LUCKY!','HOORAY!','GOT IT!']), '+1 FRIEND', 'good'); }
+
+function press(){
+  audio(); btnT=0.12;
+  switch(state){
+    case 'ready': if(coins>0){ coins--; state='moving'; claw.dir=1; sfx.coin(); if(coins===0) say('LAST COIN!','MAKE IT COUNT','info'); } break;
+    case 'moving': state='aim'; timer=0; sfx.stop(); break;
+    case 'aim': state='down'; claw.openT=1; sfx.drop(); break;
+    case 'over': if(overT>0.8){ reset(); sfx.coin(); } break;
+    default: sfx.nope();
+  }
+}
+addEventListener('keydown',e=>{ if(e.code==='Space'||e.code==='Enter'){ e.preventDefault(); if(!e.repeat) press(); } });
+cv.addEventListener('pointerdown',e=>{ e.preventDefault(); press(); });
+
+function clawGeom(){
+  const L=Math.max(8, claw.y-RAIL_Y);
+  claw.hx = claw.x + L*Math.sin(claw.th);
+  const a=-0.1+claw.open*1.0, x=claw.hx, y=claw.y;
+  claw.segs=[]; claw.tips=[];
+  for(const s of [-1,1]){
+    const px=x+s*5, py=y+4;
+    const p1=claw.th+s*a, p2=claw.th+s*(a-1.2);
+    const e1x=px+Math.sin(p1)*15, e1y=py+Math.cos(p1)*15;
+    const e2x=e1x+Math.sin(p2)*6, e2y=e1y+Math.cos(p2)*6;
+    claw.segs.push([px,py,e1x,e1y],[e1x,e1y,e2x,e2y]); claw.tips.push({x:e2x,y:e2y},{x:e1x,y:e1y});
+  }
+}
+function tipBottom(){ return Math.max(...claw.tips.map(t=>t.y)); }
+
+function landingH(){
+  let tgt=null, best=-1;
+  for(const p of plush){ if(p.gone||p.held) continue;
+    const dx=Math.abs(p.x-claw.hx), dd=Math.abs(p.d-DC);
+    if(dx<R+5 && dd<12){ const top=p.h+Math.sqrt(Math.max(0,(R+5)**2-dx*dx)); if(top>best){best=top;tgt=p;} } }
+  if(!tgt) return {stop:1,tgt:null};
+  const dx=Math.abs(tgt.x-claw.hx);
+  return {stop: dx<=SLIP ? tgt.h+1 : best-1, tgt};
+}
+function update(dt){
+  time+=dt; timer+=dt; if(btnT>0) btnT-=dt;
+  if(pop){ pop.age+=dt; if(pop.age>2.2) pop=null; }
+  claw.open += (claw.openT-claw.open)*Math.min(1,dt*9);
+  const x0=claw.x;
+  switch(state){
+    case 'ready': claw.x+=(HOME_X-claw.x)*Math.min(1,dt*6); claw.y=TOP_Y; claw.openT=0.35;
+      if(coins===0 && timer>0.3){ state='over'; overT=0; } break;
+    case 'moving':
+      claw.x+=claw.dir*52*dt;
+      if(claw.x>X_MAX){claw.x=X_MAX;claw.dir=-1;} if(claw.x<X_MIN){claw.x=X_MIN;claw.dir=1;} break;
+    case 'aim': break;
+    case 'down': {
+      claw.y+=40*dt; clawGeom();
+      const L=landingH();
+      if(wh(tipBottom()) <= L.stop || claw.y>FLOOR-30){
+        state='grab'; timer=0; claw.openT=0; sfx.grab();
+        grabTarget=L.tgt; grabDx = grabTarget? Math.abs(grabTarget.x-claw.hx) : 99;
+        claw.om += (Math.random()-0.5)*0.8;
+      }
+      break; }
+    case 'grab':
+      if(grabTarget && grabDx<=SLIP){ grabTarget.x += (claw.hx-grabTarget.x)*Math.min(1,dt*6); wake(grabTarget); }
+      if(timer>0.45){
+        const t=grabTarget;
+        if(t && !t.gone && grabDx<=SLIP && Math.hypot(t.x-claw.hx, t.h-wh(claw.y+19))<R+12){
+          held=t; held.sleep=false; held.held=true;
+          plush.forEach(q=>{ if(q!==held && !q.gone && Math.hypot(q.x-held.x,q.h-held.h,q.d-held.d)<2*R+6) wake(q); });
+          slipAt = grabDx<=TOL ? -1 : 0.3+Math.random()*0.5;
+          say(pick(['GOTCHA!','NICE AIM!','GOOD GRAB!']), 'HOLD ON...', 'good');
+        } else {
+          held=null;
+          if(t && grabDx<14) say('SO CLOSE!', 'JUST A LITTLE MORE', 'bad');
+          else say(pick(['OOPS!','MISS...','NOT QUITE','ALMOST!']), 'AIM AT THE CENTER', 'bad');
+          sfx.miss();
+        }
+        grabTarget=null; state='wait'; timer=0; fromY=claw.y;
+      } break;
+    case 'wait': if(timer>0.7){ state='up'; timer=0; } break;
+    case 'up': {
+      claw.y-=30*dt;
+      const prog=1-(claw.y-TOP_Y)/Math.max(1,fromY-TOP_Y);
+      if(held && slipAt>=0 && prog>=slipAt){
+        const p=held; p.held=false; held=null; slipAt=-1;
+        kick(p, (Math.random()-0.5)*0.8, 0.2); p.px=p.x+(Math.random()-0.5)*1.2;
+        claw.openT=0.6; claw.om += (Math.random()<0.5?-1:1)*1.2;
+        say(pick(['SLIPPED!','OH NO!','WOBBLE...']), 'IT WIGGLED AWAY', 'bad'); sfx.slip();
+      }
+      if(claw.y<=TOP_Y){ claw.y=TOP_Y; state='carry'; timer=0; }
+      break; }
+    case 'carry':
+      claw.x+=Math.sign(HOME_X-claw.x)*Math.min(Math.abs(HOME_X-claw.x),55*dt);
+      if(Math.abs(claw.x-HOME_X)<0.3 && timer>0.2){ state='release'; timer=0; claw.openT=1; } break;
+    case 'release':
+      if(held && timer>0.15){ held.held=false; held.free=true; held=null; }
+      if(timer>1.4){ state='ready'; timer=0; } break;
+    case 'over': overT+=dt; break;
+  }
+  // pendulum swing of the claw on its cable
+  claw.v = (claw.x-x0)/Math.max(dt,1e-4);
+  const acc = Math.max(-900, Math.min(900, (claw.v-claw.pv)/Math.max(dt,1e-4))); claw.pv=claw.v;
+  const L = Math.max(8, claw.y-RAIL_Y);
+  claw.om += (-(260/L)*Math.sin(claw.th) - acc/L*Math.cos(claw.th)*0.9)*dt;
+  claw.om *= Math.exp(-(held?1.4:2.0)*dt);
+  claw.th += claw.om*dt; claw.th=Math.max(-0.45,Math.min(0.45,claw.th));
+  if(state==='moving') claw.th += Math.sin(time*9)*0.0015;   // tiny jiggle while travelling
+  clawGeom();
+}
+
+// ================= drawing =================
+const bgDeco=[]; { let s=7; const rnd=()=>((s=(s*9301+49297)%233280)/233280);
+  for(let i=0;i<70;i++) bgDeco.push({x:Math.floor(rnd()*LW), y:Math.floor(rnd()*LH), k:Math.floor(rnd()*3), ph:rnd()*6}); }
+function sparkle(x,y,c,big){ rect(x,y-1,1,3,c); rect(x-1,y,3,1,c); if(big){ rect(x,y-2,1,5,c); rect(x-2,y,5,1,c);} }
+function pixLine(x0,y0,x1,y1,c){ const n=Math.ceil(Math.max(Math.abs(x1-x0),Math.abs(y1-y0))); for(let i=0;i<=n;i++) rect(Math.round(x0+(x1-x0)*i/n),Math.round(y0+(y1-y0)*i/n),1,1,c); }
+function thickLine(x0,y0,x1,y1,col){
+  const n=Math.ceil(Math.hypot(x1-x0,y1-y0)*2);
+  for(const pass of [0,1]) for(let i=0;i<=n;i++){
+    const x=Math.floor(x0+(x1-x0)*i/n), y=Math.floor(y0+(y1-y0)*i/n);
+    if(pass===0) rect(x-1,y-1,5,5,P.ink); else rect(x,y,3,3,col);
+  }
+}
+function drawClaw(heldList){
+  const cx=Math.round(claw.x), x=Math.round(claw.hx), y=Math.round(claw.y);
+  pixLine(cx,RAIL_Y+3,x,y-8,P.ink);
+  box(cx-8,RAIL_Y-3,17,7,P.lav3); rect(cx-6,RAIL_Y-1,13,1,P.lav2);
+  claw.segs.forEach((sg,i)=>{ if(i%2===0) thickLine(...sg, P.gold); });
+  heldList.forEach(p=>drawPlush(p.type,p.flip,p.x,sy(p.d,p.h),p.a));
+  claw.segs.forEach((sg,i)=>{ if(i%2===1) thickLine(...sg, P.gold); });
+  claw.segs.forEach((sg,i)=>{ if(i%2===0) rect(Math.round(sg[2]),Math.round(sg[3]),2,2,P.cream); });
+  box(x-8,y-7,17,12,P.cream); rect(x-7,y-2,15,3,P.pink); rect(x-7,y+1,15,1,P.pink2); rect(x-6,y-6,3,2,P.white);
+  box(x-3,y-11,7,5,P.red); rect(x-2,y-10,2,1,P.rose);
+}
+
+function drawMachine(){
+  rect(0,0,LW,LH,P.bg);
+  for(const d of bgDeco){ const on=(Math.sin(time*2+d.ph)>0.2);
+    if(d.k===0) sparkle(d.x,d.y,on?P.lav2:P.bgDot); else if(d.k===1) rect(d.x,d.y,1,1,P.bgDot); else heart(d.x,d.y,P.bgDot); }
+  box(8,34,176,190,P.pink); rect(9,35,3,188,P.rose); rect(180,35,3,188,P.pink2);
+  box(4,6,184,30,P.pink2); rect(5,7,182,3,P.pink); rect(5,10,182,1,P.rose);
+  for(let x=6;x<186;x+=8){ for(let i=0;i<3;i++) rect(x+i, 30-i*3, 8-2*i, 3, i%2?P.pink:P.pink3); }
+  for(let x=10;x<186;x+=12){ const on=((x/12|0)+Math.floor(time*3))%2===0; rect(x-1,12,4,4,P.ink); rect(x,13,2,2,on?P.yellow:P.cream); }
+  for(let x=4;x<188;x+=8){ rect(x+1,36,6,2,P.ink); rect(x+2,36,4,1,P.cream); rect(x,35,8,1,P.ink); }
+  box(62,8,68,24,P.cream); rect(64,10,64,1,P.rose);
+  textC('CATCH', 96, 15, P.pink3, 2, P.rose); heart(67,17,P.pink2); heart(120,17,P.pink2);
+
+  // glass interior
+  box(GL-2,GT-2,GR-GL+4,FLOOR-GT+4,P.lav);
+  g.save(); g.beginPath(); g.rect(GL-1,GT-1,GR-GL+2,FLOOR-GT+2); g.clip();
+  for(let x=GL+4;x<GR;x+=16) rect(x,GT,6,BACK-GT,P.lav2);
+  for(let i=0;i<6;i++){ const sx=GL+14+i*26, s_y=GT+12+((i*37)%40); if(Math.sin(time*3+i*1.7)>0) sparkle(sx,s_y,P.lav3,i%2); }
+  // floor plane (depth)
+  rect(GL,Math.round(BACK),GR-GL,FLOOR-Math.round(BACK),P.lav3);
+  rect(GL,Math.round(BACK),GR-GL,1,P.lav2);
+  for(let k=1;k<4;k++){ const yy=Math.round(BACK+(FLOOR-BACK)*k/4); for(let x=GL;x<GR;x+=3) rect(x,yy,1,1,P.lav); }
+  for(let x=GL+8;x<GR;x+=12){ pixLine(x,Math.round(BACK),x+(x-96)*0.12,FLOOR,P.lav); }
+  // chute hole
+  rect(GL,Math.round(BACK),DIV_X0-GL,FLOOR-Math.round(BACK),P.dark);
+  rect(GL,Math.round(BACK),DIV_X0-GL,2,P.ink);
+  textC('GOAL',(GL+DIV_X0)/2,Math.round(BACK)-16,P.lav3);
+  for(let i=0;i<3;i++) rect((GL+DIV_X0)/2-2+i, BACK-9+i, 5-2*i, 1, P.lav3);
+  // divider (glass-ish wall across the depth)
+  const dTop=Math.round(sy(D,DIV_H)), dBack=Math.round(sy(0,DIV_H));
+  box(DIV_X0,dBack,DIV_X1-DIV_X0+1,FLOOR-dBack+2,P.pink); rect(DIV_X0+1,dTop,DIV_X1-DIV_X0-1,1,P.rose);
+  rect(GL,RAIL_Y-1,GR-GL,3,P.ink); rect(GL,RAIL_Y,GR-GL,1,P.lav3);
+
+  // shadows of airborne plushies
+  g.fillStyle='rgba(74,42,79,0.28)';
+  for(const p of plush){ if(p.gone||p.h<R+2||p.x<DIV_X1) continue; const fy=Math.round(sy(p.d,0)); g.fillRect(Math.round(p.x-5),fy-1,11,2); g.fillRect(Math.round(p.x-3),fy-2,7,1); }
+  if(state==='down'||state==='aim'){ const fy=Math.round(sy(DC,0)); g.fillStyle='rgba(74,42,79,0.18)'; g.fillRect(Math.round(claw.hx-6),fy-1,13,2); }
+
+  const vis=plush.filter(p=>!p.gone&&!p.held).sort((a,b)=>(a.d+a.h*0.3)-(b.d+b.h*0.3));
+  const back=vis.filter(p=>p.d<=DC+7), front=vis.filter(p=>p.d>DC+7);
+  back.forEach(p=>drawPlush(p.type,p.flip,p.x,sy(p.d,p.h),p.a,p.d<8));
+  drawClaw(plush.filter(p=>!p.gone&&p.held));
+  front.forEach(p=>drawPlush(p.type,p.flip,p.x,sy(p.d,p.h),p.a,false));
+  g.globalAlpha=0.45; rect(GR-16,GT,3,FLOOR-GT,P.white); rect(GR-10,GT,1,FLOOR-GT,P.white); rect(GL+3,GT+4,1,30,P.white); g.globalAlpha=1;
+  g.restore();
+  drawBubble();
+
+  // control panel
+  box(14,178,164,42,P.pink2); rect(15,179,162,2,P.pink);
+  box(20,184,106,30,P.dark);
+  for(let i=0;i<COINS;i++){ const cx=25+i*8, used=i>=coins;
+    rect(cx,189,5,5,used?P.bgDot:P.ink); if(!used){ rect(cx+1,189,3,5,P.gold); rect(cx,190,5,3,P.gold); rect(cx+1,190,1,1,P.cream);} }
+  const HINT={ready:coins?'PRESS TO START':'NO COINS',moving:'PRESS TO STOP',aim:'PRESS TO GRAB',down:'. . .',grab:'. . .',wait:'. . .',up:'. . .',carry:'FINGERS CROSSED',release:'FINGERS CROSSED',over:'GAME OVER'}[state];
+  const blink=(state==='ready'||state==='moving'||state==='aim')?(Math.floor(time*2.5)%2===0):true;
+  if(blink) text(HINT,25,203,P.cream);
+  const dd=btnT>0?2:0;
+  rect(140,192,30,20,P.ink); rect(141,206,28,5,P.pink3);
+  const bx=155, by=196+dd;
+  for(let yy=-9;yy<=9;yy++) for(let xx=-12;xx<=12;xx++){ const r=(xx*xx)/144+(yy*yy)/81; if(r<=1) rect(bx+xx,by+yy,1,1, r>0.78?P.ink:P.red); }
+  rect(bx-7,by-6,4,2,P.rose); heart(bx-2,by-2,P.cream);
+  box(14,224,164,28,P.dark);
+  heart(19,229,P.pink); text('x'+prizes.length,26,229,P.cream);
+  prizes.slice(-9).forEach((p,i)=>drawPlush(p.type,p.flip,46+i*14,244));
+}
+
+function drawOver(){
+  const a=Math.min(1,overT/0.4);
+  g.globalAlpha=a*0.92; rect(0,0,LW,LH,P.bg); g.globalAlpha=a;
+  box(16,30,160,196,P.cream); box(19,33,154,190,P.cream,P.pink2);
+  const n=prizes.length;
+  textC('GAME OVER',96,46,P.pink3,2,P.rose);
+  textC(n===0?'NO FRIENDS YET...':'YOU RESCUED '+n,96,68,P.ink);
+  const cols=7;
+  prizes.forEach((p,i)=>{ const c=i%cols, r=Math.floor(i/cols); const bob=Math.round(Math.sin(time*4+i)*1.2);
+    drawPlush(p.type,p.flip,96-(cols-1)*9+c*18,98+r*22+bob); });
+  if(n===0){ drawPlush('bunny',false,80,110); drawPlush('kitty',true,112,110); textC('COME BACK SOON',96,128,P.lav2); }
+  if(overT>0.8 && Math.floor(time*2.5)%2===0) textC('PRESS TO PLAY AGAIN',96,206,P.pink3);
+  g.globalAlpha=1;
+}
+
+function render(){ drawMachine(); if(state==='over') drawOver(); out.imageSmoothingEnabled=false; out.drawImage(lc,0,0,cv.width,cv.height); }
+let last=performance.now(), acc=0;
+function frame(now){
+  const dt=Math.min(0.05,(now-last)/1000); last=now;
+  update(dt); acc+=dt; while(acc>=1/120){ step(1/120); acc-=1/120; }
+  render(); requestAnimationFrame(frame);
+}
+spawn(); clawGeom(); requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>
